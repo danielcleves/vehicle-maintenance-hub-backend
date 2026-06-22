@@ -1,10 +1,10 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
 use App\Domains\Auth\Controllers\AuthController;
-use App\Domains\Vehicles\Controllers\VehicleController;
 use App\Domains\Maintenance\Controllers\MaintenancePlanController;
 use App\Domains\Maintenance\Controllers\MaintenanceRecordController;
+use App\Domains\Vehicles\Controllers\VehicleController;
+use Illuminate\Support\Facades\Route;
 
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);

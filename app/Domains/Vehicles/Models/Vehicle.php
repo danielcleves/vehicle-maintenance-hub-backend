@@ -2,9 +2,9 @@
 
 namespace App\Domains\Vehicles\Models;
 
-use App\Domains\Users\Models\User;
 use App\Domains\Maintenance\Models\MaintenancePlan;
 use App\Domains\Maintenance\Models\MaintenanceRecord;
+use App\Domains\Users\Models\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;

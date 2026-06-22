@@ -2,8 +2,8 @@
 
 namespace App\Domains\Auth\Controllers;
 
-use App\Http\Controllers\Controller;
 use App\Domains\Users\Models\User;
+use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use PHPOpenSourceSaver\JWTAuth\JWTGuard;
 
@@ -18,12 +18,12 @@ class AuthController extends Controller
     public function register(Request $request)
     {
         $request->validate([
-            'name'     => 'required|string',
-            'email'    => 'required|email|unique:users',
-            'password' => 'required|min:6'
+            'name' => 'required|string',
+            'email' => 'required|email|unique:users',
+            'password' => 'required|min:6',
         ]);
 
-        $user  = User::create($request->only(['name', 'email', 'password']));
+        $user = User::create($request->only(['name', 'email', 'password']));
         $token = $this->guard()->login($user);
 
         return $this->respondWithToken($token);
@@ -33,7 +33,7 @@ class AuthController extends Controller
     {
         $credentials = $request->only(['email', 'password']);
 
-        if (!$token = $this->guard()->attempt($credentials)) {
+        if (! $token = $this->guard()->attempt($credentials)) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
@@ -49,7 +49,7 @@ class AuthController extends Controller
     {
         $data = $request->validate([
             'name' => 'sometimes|string|max:255',
-            'email' => 'sometimes|email|unique:users,email,' . auth()->id(),
+            'email' => 'sometimes|email|unique:users,email,'.auth()->id(),
             'advance_alerts_time' => 'sometimes|integer|min:0|max:365',
             'advance_alerts_mileage' => 'sometimes|integer|min:0|max:100000',
             'preferred_distance_unit' => 'sometimes|string|in:km,mi',
@@ -65,10 +65,11 @@ class AuthController extends Controller
     {
         try {
             $token = $request->bearerToken();
-            if (!$token) {
+            if (! $token) {
                 return response()->json(['error' => 'Token not provided'], 401);
             }
             $newToken = $this->guard()->setToken($token)->refresh();
+
             return $this->respondWithToken($newToken);
         } catch (\PHPOpenSourceSaver\JWTAuth\Exceptions\JWTException $e) {
             return response()->json(['error' => 'Token not refreshable'], 401);
@@ -86,8 +87,8 @@ class AuthController extends Controller
     {
         return response()->json([
             'access_token' => $token,
-            'token_type'   => 'bearer',
-            'expires_in'   => $this->guard()->factory()->getTTL() * 60
+            'token_type' => 'bearer',
+            'expires_in' => $this->guard()->factory()->getTTL() * 60,
         ]);
     }
 }
