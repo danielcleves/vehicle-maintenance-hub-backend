@@ -3,64 +3,42 @@
 namespace App\Domains\Vehicles\Controllers;
 
 use App\Domains\Maintenance\Models\MaintenancePlan;
-use App\Domains\Maintenance\Models\MaintenancePlanTask;
-use App\Domains\Maintenance\Models\MaintenanceRecord;
+use App\Domains\Maintenance\Services\MaintenanceComputationService;
 use App\Domains\Vehicles\Models\Vehicle;
+use App\Domains\Vehicles\Services\VehicleService;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 
 class VehicleController extends Controller
 {
+    public function __construct(
+        private readonly VehicleService $vehicleService,
+        private readonly MaintenanceComputationService $computationService,
+    ) {}
+
     public function index()
     {
-        $vehicles = auth()->user()->vehicles()->with('maintenancePlan.tasks', 'maintenanceRecords')->get();
+        $user = auth()->user();
+        $vehicles = $user->vehicles()->with('maintenancePlan.tasks', 'maintenanceRecords')->get();
 
-        $vehicles = $vehicles->map(function ($vehicle) {
-            $user = auth()->user();
-            $records = $vehicle->maintenanceRecords;
-
-            $overdue = 0;
-            $upcoming = 0;
+        $vehicles = $vehicles->map(function ($vehicle) use ($user) {
+            $vehicleArray = $vehicle->toArray();
 
             if ($vehicle->maintenancePlan) {
-                foreach ($vehicle->maintenancePlan->tasks as $task) {
-                    $lastRecord = $records
-                        ->where('maintenance_plan_task_id', $task->id)
-                        ->sortByDesc('date')
-                        ->first();
+                [$overdue, $upcoming] = $this->computationService->computeAlertCounts(
+                    $vehicle->maintenancePlan,
+                    $vehicle->maintenanceRecords,
+                    $vehicle,
+                    $user,
+                );
 
-                    $lastMileage = $lastRecord?->mileage ?? $vehicle->mileage;
-                    $lastDate = $lastRecord?->date ?? $vehicle->created_at;
-
-                    $nextDueKm = $task->frequency_km ? $lastMileage + $task->frequency_km : null;
-                    $nextDueDate = $task->frequency_time_months ? $lastDate->copy()->addMonths($task->frequency_time_months) : null;
-
-                    if (($nextDueKm && $vehicle->mileage >= $nextDueKm) || ($nextDueDate && now()->startOfDay()->greaterThanOrEqualTo($nextDueDate))) {
-                        $overdue++;
-                    } elseif (
-                        ($nextDueKm && $vehicle->mileage >= ($nextDueKm - $user->advance_alerts_mileage)) ||
-                        ($nextDueDate && now()->startOfDay()->greaterThanOrEqualTo($nextDueDate->copy()->subDays($user->advance_alerts_time)))
-                    ) {
-                        $upcoming++;
-                    }
-
-                    $nextReviewKm = $task->review_frequency_km ? $lastMileage + $task->review_frequency_km : null;
-                    $nextReviewDate = $task->review_frequency_time_months ? $lastDate->copy()->addMonths($task->review_frequency_time_months) : null;
-
-                    if (($nextReviewKm && $vehicle->mileage >= $nextReviewKm) || ($nextReviewDate && now()->startOfDay()->greaterThanOrEqualTo($nextReviewDate))) {
-                        $overdue++;
-                    } elseif (
-                        ($nextReviewKm && $vehicle->mileage >= ($nextReviewKm - $user->advance_alerts_mileage)) ||
-                        ($nextReviewDate && now()->startOfDay()->greaterThanOrEqualTo($nextReviewDate->copy()->subDays($user->advance_alerts_time)))
-                    ) {
-                        $upcoming++;
-                    }
-                }
+                $vehicleArray['overdue_count'] = $overdue;
+                $vehicleArray['upcoming_count'] = $upcoming;
+            } else {
+                $vehicleArray['overdue_count'] = 0;
+                $vehicleArray['upcoming_count'] = 0;
             }
 
-            $vehicleArray = $vehicle->toArray();
-            $vehicleArray['overdue_count'] = $overdue;
-            $vehicleArray['upcoming_count'] = $upcoming;
             unset($vehicleArray['maintenance_records']);
 
             return $vehicleArray;
@@ -105,77 +83,10 @@ class VehicleController extends Controller
             $planData['tasks'] = $plan->tasks->map(function ($task) use ($records, $vehicle, $user) {
                 $taskArray = $task->toArray();
 
-                $lastRecord = $records
-                    ->where('maintenance_plan_task_id', $task->id)
-                    ->sortByDesc('date')
-                    ->first();
+                $info = $this->computationService->computeTaskInfo($task, $records, $vehicle, $user);
 
-                $lastMileage = $lastRecord?->mileage ?? $vehicle->mileage;
-                $lastDate = $lastRecord?->date ?? $vehicle->created_at;
-
-                $nextDueKm = $task->frequency_km
-                    ? $lastMileage + $task->frequency_km
-                    : null;
-
-                $nextDueDate = $task->frequency_time_months
-                    ? $lastDate->copy()->addMonths($task->frequency_time_months)
-                    : null;
-
-                $remainingKm = $nextDueKm !== null ? max(0, $nextDueKm - $vehicle->mileage) : null;
-                $remainingDays = $nextDueDate !== null ? max(0, now()->startOfDay()->diffInDays($nextDueDate, false)) : null;
-
-                $status = 'ok';
-                if ($nextDueKm && $vehicle->mileage >= $nextDueKm) {
-                    $status = 'overdue';
-                } elseif ($nextDueDate && now()->startOfDay()->greaterThanOrEqualTo($nextDueDate)) {
-                    $status = 'overdue';
-                } elseif ($nextDueKm && $vehicle->mileage >= ($nextDueKm - $user->advance_alerts_mileage)) {
-                    $status = 'upcoming';
-                } elseif ($nextDueDate && now()->startOfDay()->greaterThanOrEqualTo(
-                    $nextDueDate->copy()->subDays($user->advance_alerts_time)
-                )) {
-                    $status = 'upcoming';
-                }
-
-                $taskArray['next_maintenance'] = [
-                    'next_due_km' => $nextDueKm,
-                    'next_due_date' => $nextDueDate?->toDateString(),
-                    'remaining_km' => $remainingKm,
-                    'remaining_days' => $remainingDays,
-                    'status' => $status,
-                ];
-
-                $nextReviewKm = $task->review_frequency_km
-                    ? $lastMileage + $task->review_frequency_km
-                    : null;
-
-                $nextReviewDate = $task->review_frequency_time_months
-                    ? $lastDate->copy()->addMonths($task->review_frequency_time_months)
-                    : null;
-
-                $reviewRemainingKm = $nextReviewKm !== null ? max(0, $nextReviewKm - $vehicle->mileage) : null;
-                $reviewRemainingDays = $nextReviewDate !== null ? max(0, now()->startOfDay()->diffInDays($nextReviewDate, false)) : null;
-
-                $reviewStatus = 'ok';
-                if ($nextReviewKm && $vehicle->mileage >= $nextReviewKm) {
-                    $reviewStatus = 'overdue';
-                } elseif ($nextReviewDate && now()->startOfDay()->greaterThanOrEqualTo($nextReviewDate)) {
-                    $reviewStatus = 'overdue';
-                } elseif ($nextReviewKm && $vehicle->mileage >= ($nextReviewKm - $user->advance_alerts_mileage)) {
-                    $reviewStatus = 'upcoming';
-                } elseif ($nextReviewDate && now()->startOfDay()->greaterThanOrEqualTo(
-                    $nextReviewDate->copy()->subDays($user->advance_alerts_time)
-                )) {
-                    $reviewStatus = 'upcoming';
-                }
-
-                $taskArray['next_review'] = [
-                    'next_due_km' => $nextReviewKm,
-                    'next_due_date' => $nextReviewDate?->toDateString(),
-                    'remaining_km' => $reviewRemainingKm,
-                    'remaining_days' => $reviewRemainingDays,
-                    'status' => $reviewStatus,
-                ];
+                $taskArray['next_maintenance'] = $info['next_maintenance'];
+                $taskArray['next_review'] = $info['next_review'];
 
                 return $taskArray;
             })->toArray();
@@ -246,115 +157,12 @@ class VehicleController extends Controller
             return response()->json([]);
         }
 
-        $tasks = $plan->tasks()->where('is_active', true)->get();
         $records = $vehicle->maintenanceRecords;
         $user = auth()->user();
 
-        $reminders = $tasks->map(function ($task) use ($records, $vehicle, $user) {
-            $lastRecord = $records
-                ->where('maintenance_plan_task_id', $task->id)
-                ->sortByDesc('date')
-                ->first();
-
-            $lastMileage = $lastRecord?->mileage ?? $vehicle->mileage;
-            $lastDate = $lastRecord?->date ?? $vehicle->created_at;
-
-            $nextDueKm = $task->frequency_km
-                ? $lastMileage + $task->frequency_km
-                : null;
-
-            $nextDueDate = $task->frequency_time_months
-                ? $lastDate->copy()->addMonths($task->frequency_time_months)
-                : null;
-
-            $status = 'ok';
-            $isDue = false;
-
-            if ($nextDueKm && $vehicle->mileage >= $nextDueKm) {
-                $status = 'overdue';
-                $isDue = true;
-            } elseif ($nextDueDate && now()->startOfDay()->greaterThanOrEqualTo($nextDueDate)) {
-                $status = 'overdue';
-                $isDue = true;
-            } elseif ($nextDueKm && $vehicle->mileage >= ($nextDueKm - $user->advance_alerts_mileage)) {
-                $status = 'upcoming';
-            } elseif ($nextDueDate && now()->startOfDay()->greaterThanOrEqualTo(
-                $nextDueDate->copy()->subDays($user->advance_alerts_time)
-            )) {
-                $status = 'upcoming';
-            }
-
-            return [
-                'task_id' => $task->id,
-                'task_name' => $task->name,
-                'description' => $task->description,
-                'frequency_km' => $task->frequency_km,
-                'frequency_time_months' => $task->frequency_time_months,
-                'next_due_km' => $nextDueKm,
-                'next_due_date' => $nextDueDate?->toDateString(),
-                'status' => $status,
-                'last_record' => $lastRecord ? [
-                    'date' => $lastRecord->date->toDateString(),
-                    'mileage' => $lastRecord->mileage,
-                ] : null,
-            ];
-        });
-
-        $reviewReminders = $tasks->map(function ($task) use ($records, $vehicle, $user) {
-            $lastRecord = $records
-                ->where('maintenance_plan_task_id', $task->id)
-                ->sortByDesc('date')
-                ->first();
-
-            $lastMileage = $lastRecord?->mileage ?? $vehicle->mileage;
-            $lastDate = $lastRecord?->date ?? $vehicle->created_at;
-
-            $nextDueKm = $task->review_frequency_km
-                ? $lastMileage + $task->review_frequency_km
-                : null;
-
-            $nextDueDate = $task->review_frequency_time_months
-                ? $lastDate->copy()->addMonths($task->review_frequency_time_months)
-                : null;
-
-            $status = 'ok';
-            $isDue = false;
-
-            if ($nextDueKm && $vehicle->mileage >= $nextDueKm) {
-                $status = 'overdue';
-                $isDue = true;
-            } elseif ($nextDueDate && now()->startOfDay()->greaterThanOrEqualTo($nextDueDate)) {
-                $status = 'overdue';
-                $isDue = true;
-            } elseif ($nextDueKm && $vehicle->mileage >= ($nextDueKm - $user->advance_alerts_mileage)) {
-                $status = 'upcoming';
-            } elseif ($nextDueDate && now()->startOfDay()->greaterThanOrEqualTo(
-                $nextDueDate->copy()->subDays($user->advance_alerts_time)
-            )) {
-                $status = 'upcoming';
-            }
-
-            if (! $nextDueKm && ! $nextDueDate) {
-                return null;
-            }
-
-            return [
-                'task_id' => $task->id,
-                'task_name' => '🔍 '.$task->name.' (Revisión)',
-                'description' => $task->description,
-                'frequency_km' => $task->review_frequency_km,
-                'frequency_time_months' => $task->review_frequency_time_months,
-                'next_due_km' => $nextDueKm,
-                'next_due_date' => $nextDueDate?->toDateString(),
-                'status' => $status,
-                'last_record' => $lastRecord ? [
-                    'date' => $lastRecord->date->toDateString(),
-                    'mileage' => $lastRecord->mileage,
-                ] : null,
-            ];
-        })->filter()->values();
-
-        return response()->json($reminders->merge($reviewReminders));
+        return response()->json(
+            $this->computationService->computeReminders($plan, $records, $vehicle, $user)
+        );
     }
 
     public function assignPlan(Request $request, Vehicle $vehicle)
@@ -373,9 +181,7 @@ class VehicleController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        $vehicle->update(['maintenance_plan_id' => $plan->id]);
-
-        return response()->json($vehicle->load('maintenancePlan.tasks'));
+        return response()->json($this->vehicleService->assignPlan($vehicle, $plan->id));
     }
 
     public function copyPlan(Request $request, Vehicle $vehicle)
@@ -394,34 +200,13 @@ class VehicleController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        $sourcePlan = $sourceVehicle->maintenancePlan;
-
-        if (! $sourcePlan) {
+        if (! $sourceVehicle->maintenancePlan) {
             return response()->json(['error' => 'Source vehicle has no plan'], 400);
         }
 
-        $newPlan = MaintenancePlan::create([
-            'user_id' => auth()->id(),
-            'name' => $sourcePlan->name.' (copia)',
-            'is_predefined' => false,
-        ]);
-
-        foreach ($sourcePlan->tasks as $task) {
-            MaintenancePlanTask::create([
-                'maintenance_plan_id' => $newPlan->id,
-                'name' => $task->name,
-                'description' => $task->description,
-                'frequency_km' => $task->frequency_km,
-                'frequency_time_months' => $task->frequency_time_months,
-                'review_frequency_km' => $task->review_frequency_km,
-                'review_frequency_time_months' => $task->review_frequency_time_months,
-                'is_active' => $task->is_active,
-            ]);
-        }
-
-        $vehicle->update(['maintenance_plan_id' => $newPlan->id]);
-
-        return response()->json($vehicle->load('maintenancePlan.tasks'));
+        return response()->json(
+            $this->vehicleService->copyPlanFromVehicle($vehicle, $sourceVehicle->id)
+        );
     }
 
     public function export(Vehicle $vehicle)
@@ -430,9 +215,7 @@ class VehicleController extends Controller
             return response()->json(['error' => 'Forbidden'], 403);
         }
 
-        $vehicle->load('maintenancePlan.tasks', 'maintenanceRecords');
-
-        return response()->json($vehicle);
+        return response()->json($this->vehicleService->exportVehicle($vehicle));
     }
 
     public function import(Request $request)
@@ -460,41 +243,6 @@ class VehicleController extends Controller
             'maintenance_records.*.notes' => 'nullable|string',
         ]);
 
-        $vehicleData = collect($data)->only(['nickname', 'brand', 'model', 'year', 'mileage', 'plate'])->toArray();
-        $vehicleData['user_id'] = auth()->id();
-
-        $vehicle = Vehicle::create($vehicleData);
-
-        if (isset($data['maintenance_plan'])) {
-            $plan = MaintenancePlan::create([
-                'user_id' => auth()->id(),
-                'name' => $data['maintenance_plan']['name'],
-                'is_predefined' => false,
-            ]);
-
-            if (isset($data['maintenance_plan']['tasks'])) {
-                foreach ($data['maintenance_plan']['tasks'] as $taskData) {
-                    MaintenancePlanTask::create([
-                        'maintenance_plan_id' => $plan->id,
-                        ...$taskData,
-                    ]);
-                }
-            }
-
-            $vehicle->update(['maintenance_plan_id' => $plan->id]);
-        }
-
-        if (isset($data['maintenance_records'])) {
-            foreach ($data['maintenance_records'] as $recordData) {
-                MaintenanceRecord::create([
-                    'vehicle_id' => $vehicle->id,
-                    ...$recordData,
-                ]);
-            }
-        }
-
-        $vehicle->load('maintenancePlan.tasks', 'maintenanceRecords');
-
-        return response()->json($vehicle, 201);
+        return response()->json($this->vehicleService->importWithRelations($data), 201);
     }
 }

@@ -2,14 +2,18 @@
 
 namespace App\Domains\Maintenance\Controllers;
 
-use App\Domains\Maintenance\Models\MaintenancePlanTask;
 use App\Domains\Maintenance\Models\MaintenanceRecord;
+use App\Domains\Maintenance\Services\MaintenanceRecordService;
 use App\Domains\Vehicles\Models\Vehicle;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 
 class MaintenanceRecordController extends Controller
 {
+    public function __construct(
+        private readonly MaintenanceRecordService $recordService,
+    ) {}
+
     public function index(Vehicle $vehicle)
     {
         if ($vehicle->user_id !== auth()->id()) {
@@ -39,13 +43,7 @@ class MaintenanceRecordController extends Controller
             'is_review_only' => 'nullable|boolean',
         ]);
 
-        $task = MaintenancePlanTask::findOrFail($data['maintenance_plan_task_id']);
-        $data['task_name'] = $task->name;
-        $data['vehicle_id'] = $vehicle->id;
-
-        $record = MaintenanceRecord::create($data);
-
-        return response()->json($record->load('maintenancePlanTask'), 201);
+        return response()->json($this->recordService->store($vehicle, $data), 201);
     }
 
     public function show(Vehicle $vehicle, MaintenanceRecord $record)
@@ -72,14 +70,7 @@ class MaintenanceRecordController extends Controller
             'is_review_only' => 'nullable|boolean',
         ]);
 
-        if (isset($data['maintenance_plan_task_id'])) {
-            $task = MaintenancePlanTask::findOrFail($data['maintenance_plan_task_id']);
-            $data['task_name'] = $task->name;
-        }
-
-        $record->update($data);
-
-        return response()->json($record->load('maintenancePlanTask'));
+        return response()->json($this->recordService->update($record, $data));
     }
 
     public function destroy(Vehicle $vehicle, MaintenanceRecord $record)
