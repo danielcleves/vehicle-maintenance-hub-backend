@@ -10,19 +10,21 @@ class DatabaseSeeder extends Seeder
 {
     use WithoutModelEvents;
 
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // Create SuperAdmin with ID = 1
         User::updateOrCreate(
             ['id' => 1],
             [
                 'name' => 'SuperAdmin',
                 'email' => 'superadmin@example.com',
                 'password' => '$2y$12$5seIJTszouEPTfv55dfPdOgIn/v3FV805XsJOt.tDVmQq6JMi58qK',
+                'advance_alerts_time' => 30,
+                'advance_alerts_mileage' => 500,
             ]
         );
+
+        $this->call([
+            PredefinedPlanSeeder::class,
+        ]);
     }
 }
